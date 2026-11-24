@@ -1,0 +1,131 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Calculadora compartida</title>
+<style>
+:root{--bg:#101820;--panel:#1b2833;--key:#2c3c49;--accent:#367c2b;--accent2:#f0b323;--text:#f4f7f8;--muted:#aab7c2}
+*{box-sizing:border-box}body{margin:0;min-height:100vh;background:linear-gradient(145deg,#101820,#243746);color:var(--text);font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;display:grid;place-items:center;padding:18px}
+.app{width:min(100%,430px);background:var(--panel);border:1px solid #40515e;border-radius:22px;padding:20px;box-shadow:0 18px 50px #0007}
+h1{font-size:1.25rem;margin:0 0 5px}.sub{color:var(--muted);font-size:.88rem;margin:0 0 16px}
+.room{display:flex;gap:8px;margin-bottom:14px}.room input{min-width:0;flex:1;background:#101820;color:white;border:1px solid #50616d;border-radius:10px;padding:11px;font-size:1rem}
+button{border:0;border-radius:10px;color:white;background:var(--key);font-weight:650;font-size:1rem;padding:12px;cursor:pointer}
+button:active{transform:scale(.98)}button:disabled{opacity:.5;cursor:not-allowed}
+.small{font-size:.82rem;padding:10px 12px}.green{background:var(--accent)}.gold{background:#8a6410}
+.status{font-size:.8rem;color:var(--muted);min-height:20px;margin:0 0 8px}
+.display{background:#0b1218;border:1px solid #344653;border-radius:14px;min-height:100px;padding:14px;margin-bottom:14px;display:flex;flex-direction:column;justify-content:flex-end;align-items:flex-end;overflow:hidden}
+#expression{font-size:.9rem;color:var(--muted);min-height:22px;max-width:100%;overflow-wrap:anywhere}
+#value{font-size:2.5rem;font-weight:650;max-width:100%;overflow-wrap:anywhere}
+.keys{display:grid;grid-template-columns:repeat(4,1fr);gap:9px}.keys button{min-height:58px;font-size:1.2rem}.keys .op{background:#405563}.keys .equals{background:var(--accent)}.keys .clear{background:#854238}.keys .zero{grid-column:span 2}
+.note{font-size:.76rem;color:var(--muted);line-height:1.45;margin:14px 2px 0}
+#share{width:100%;margin-top:10px;background:#344653}
+</style>
+</head>
+<body>
+<main class="app">
+  <h1>Calculadora compartida</h1>
+  <p class="sub">La misma operación se muestra en los dos dispositivos.</p>
+  <div class="room">
+    <input id="roomCode" placeholder="Código de sala" maxlength="20" autocomplete="off">
+    <button id="joinBtn" class="small green">Entrar</button>
+  </div>
+  <p id="status" class="status">Configura Firebase para activar la sincronización.</p>
+  <section class="display" aria-live="polite">
+    <div id="expression"></div>
+    <div id="value">0</div>
+  </section>
+  <section class="keys">
+    <button class="clear" data-action="clear">AC</button>
+    <button class="op" data-action="back">⌫</button>
+    <button class="op" data-action="percent">%</button>
+    <button class="op" data-action="operator" data-value="/">÷</button>
+    <button data-action="digit" data-value="7">7</button>
+    <button data-action="digit" data-value="8">8</button>
+    <button data-action="digit" data-value="9">9</button>
+    <button class="op" data-action="operator" data-value="*">×</button>
+    <button data-action="digit" data-value="4">4</button>
+    <button data-action="digit" data-value="5">5</button>
+    <button data-action="digit" data-value="6">6</button>
+    <button class="op" data-action="operator" data-value="-">−</button>
+    <button data-action="digit" data-value="1">1</button>
+    <button data-action="digit" data-value="2">2</button>
+    <button data-action="digit" data-value="3">3</button>
+    <button class="op" data-action="operator" data-value="+">+</button>
+    <button class="zero" data-action="digit" data-value="0">0</button>
+    <button data-action="decimal">.</button>
+    <button class="equals" data-action="equals">=</button>
+  </section>
+  <button id="share" class="small">Copiar enlace de esta sala</button>
+  <p class="note">Comparte el mismo enlace o código con la otra persona. Las pulsaciones se sincronizan al instante cuando ambos están conectados. Si los dos pulsan a la vez, prevalece la última actualización recibida.</p>
+</main>
+<script type="module">
+import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js";
+import { getAuth, signInAnonymously } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
+import { getDatabase, ref, onValue, set } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-database.js";
+
+// 1) Reemplaza estos valores con la configuración de tu proyecto Firebase.
+const firebaseConfig = {
+  apiKey: "AIzaSyBntgIqZi2Z3th7viLPPNBaVC-4QBK6NhU",
+  authDomain: "calculadora-10fc7.firebaseapp.com",
+  databaseURL: "https://calculadora-10fc7-default-rtdb.firebaseio.com/",
+  projectId: "calculadora-10fc7",
+  appId: "1:289351037268:web:a2d3be78f3f121b63b18c1"
+};
+
+const $ = id => document.getElementById(id);
+const statusEl = $("status");
+const roomInput = $("roomCode");
+const valueEl = $("value");
+const exprEl = $("expression");
+let db, currentRoom = "", state = freshState(), applyingRemote = false, unsubscribe = null;
+
+function freshState(){return {display:"0", stored:null, operator:null, waiting:false, expression:""}}
+function render(s=state){valueEl.textContent=s.display ?? "0";exprEl.textContent=s.expression ?? ""}
+function roomId(){return Math.random().toString(36).slice(2,7).toUpperCase()+Math.random().toString(36).slice(2,5).toUpperCase()}
+function showStatus(t){statusEl.textContent=t}
+function cleanNumber(n){if(!Number.isFinite(n)) return "Error"; return String(Number(n.toPrecision(11)))}
+async function publish(){if(!db || !currentRoom || applyingRemote) return; try{await set(ref(db,"rooms/"+currentRoom+"/calculator"),state)}catch(e){showStatus("No se pudo sincronizar: "+e.message)}}
+function subscribe(room){
+  if(unsubscribe) unsubscribe();
+  currentRoom=room.toUpperCase(); roomInput.value=currentRoom;
+  location.hash=currentRoom;
+  unsubscribe=onValue(ref(db,"rooms/"+currentRoom+"/calculator"),snap=>{
+    if(snap.exists()){applyingRemote=true;state=snap.val();render();applyingRemote=false}
+    else publish();
+  },err=>showStatus("Error de sala: "+err.message));
+  showStatus("Conectado · Sala "+currentRoom);
+}
+function update(mutator){mutator();render();publish()}
+function digit(d){update(()=>{if(state.display==="Error") state=freshState(); if(state.waiting){state.display=d;state.waiting=false}else state.display=state.display==="0"?d:state.display+d})}
+function decimal(){update(()=>{if(state.waiting){state.display="0.";state.waiting=false}else if(!state.display.includes("."))state.display+="."})}
+function op(next){update(()=>{const x=Number(state.display);if(state.operator && !state.waiting){const y=calculate(Number(state.stored),x,state.operator);state.display=cleanNumber(y);state.stored=y}else state.stored=x;state.operator=next;state.waiting=true;state.expression=state.display+" "+symbol(next)})}
+function symbol(o){return ({"+":"+","-":"−","*":"×","/":"÷"})[o]||o}
+function calculate(a,b,o){if(o==="+")return a+b;if(o==="-")return a-b;if(o==="*")return a*b;if(o==="/")return b===0?NaN:a/b;return b}
+function equals(){update(()=>{if(!state.operator || state.stored===null)return;const a=Number(state.stored),b=Number(state.display),o=state.operator;const result=calculate(a,b,o);state.expression=cleanNumber(a)+" "+symbol(o)+" "+cleanNumber(b)+" =";state.display=cleanNumber(result);state.stored=null;state.operator=null;state.waiting=true})}
+function clear(){update(()=>state=freshState())}
+function back(){update(()=>{if(state.waiting)return;state.display=state.display.length>1?state.display.slice(0,-1):"0"})}
+function percent(){update(()=>{state.display=cleanNumber(Number(state.display)/100);state.waiting=false})}
+
+document.querySelector(".keys").addEventListener("click",e=>{
+ const b=e.target.closest("button");if(!b)return;
+ const a=b.dataset.action,v=b.dataset.value;
+ if(a==="digit")digit(v);else if(a==="decimal")decimal();else if(a==="operator")op(v);else if(a==="equals")equals();else if(a==="clear")clear();else if(a==="back")back();else if(a==="percent")percent();
+});
+$("joinBtn").addEventListener("click",()=>{const code=roomInput.value.trim().replace(/[^a-z0-9]/gi,"").toUpperCase();if(code)subscribe(code)});
+$("share").addEventListener("click",async()=>{try{await navigator.clipboard.writeText(location.href);showStatus("Enlace copiado. Envíalo al otro dispositivo.")}catch{showStatus("Copia el enlace desde la barra del navegador.")}});
+
+const configured = firebaseConfig.apiKey.startsWith("AIza") && firebaseConfig.databaseURL.startsWith("https://");
+if(!configured){showStatus("Falta conectar tu proyecto Firebase (instrucciones en LEEME).");}
+else{
+ try{
+  const app=initializeApp(firebaseConfig);const auth=getAuth(app);db=getDatabase(app);
+  await signInAnonymously(auth);
+  const initial=location.hash.slice(1).trim();
+  if(initial)subscribe(initial);else{const r=roomId();subscribe(r);await publish()}
+ }catch(e){showStatus("Firebase: "+e.message+" · Revisa la configuración y la autenticación anónima.")}
+}
+render();
+</script>
+</body>
+</html>
